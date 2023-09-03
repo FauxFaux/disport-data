@@ -1,10 +1,15 @@
+use std::collections::HashMap;
 use std::env;
+use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Context, Error, Result};
 use base64::engine::general_purpose::STANDARD as b64;
 use base64::Engine;
 use chrono::Utc;
 use hmac::Mac;
+use log::error;
+use mqtt_reeze::{Mqtt, QoS, Topic};
+use reqwest::Client;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -13,6 +18,8 @@ type HmacSha1 = hmac::Hmac<sha1::Sha1>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    pretty_env_logger::init_timed();
+
     let req = {
         Req {
             api: env_var("SOLIS_API")?.trim_end_matches('/').to_string(),
@@ -21,19 +28,9 @@ async fn main() -> Result<()> {
         }
     };
 
-    let client = reqwest::Client::new();
+    let mqtt = Mqtt::new_from_env("soliscloud-mqtt").context("creating mqtt client")?;
 
-    let resp = call_api::<Resp<AllStations>>(
-        &client,
-        &req,
-        "/v1/api/userStationList",
-        &json!({
-            "pageNo": 1,
-            "pageSize": 10,
-        }),
-    )
-    .await?;
-    let station = &resp.data.page.records[0];
+    let client = reqwest::Client::new();
 
     let resp = call_api::<Resp<AllInverters>>(
         &client,
@@ -46,8 +43,33 @@ async fn main() -> Result<()> {
     )
     .await?;
 
-    let id = &resp.data.page.records[0].id;
-    let resp = call_api::<Resp<Value>>(
+    let inverter_ids = resp
+        .data
+        .page
+        .records
+        .iter()
+        .map(|i| i.id.clone())
+        .collect::<Vec<_>>();
+
+    let err: Error = 'app: loop {
+        for id in &inverter_ids {
+            if let Err(err) = publish_one(&client, &req, &mqtt, id).await {
+                break 'app err;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    };
+
+    error!("Something failed, trying to shutdown: {:?}", err);
+
+    mqtt.finish().await?;
+
+    Err(err).context("running app")
+}
+
+async fn publish_one(client: &Client, req: &Req, mqtt: &Mqtt, id: &str) -> Result<()> {
+    let resp = call_api::<Resp<HashMap<String, Value>>>(
         &client,
         &req,
         "/v1/api/inverterDetail",
@@ -56,7 +78,15 @@ async fn main() -> Result<()> {
         }),
     )
     .await?;
-    println!("{:#?}", resp.data);
+    mqtt.publish_json(
+        &Topic::new(
+            format!("soliscloud/inverter/{}/detail", id),
+            QoS::AtLeastOnce,
+            true,
+        ),
+        &resp.data,
+    )
+    .await?;
     Ok(())
 }
 
@@ -72,12 +102,6 @@ struct Resp<T> {
     msg: String,
     data: T,
     success: bool,
-}
-
-#[derive(Deserialize)]
-struct AllStations {
-    page: Pager<Station>,
-    // incomplete
 }
 
 #[derive(Deserialize)]
