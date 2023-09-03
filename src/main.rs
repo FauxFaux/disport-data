@@ -6,7 +6,7 @@ use base64::Engine;
 use chrono::Utc;
 use hmac::Mac;
 use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 type HmacSha1 = hmac::Hmac<sha1::Sha1>;
@@ -21,15 +21,42 @@ async fn main() -> Result<()> {
         }
     };
 
-    let data = json!({
-        "pageNo": 1,
-        "pageSize": 10,
-    });
-    let path = "/v1/api/userStationList";
     let client = reqwest::Client::new();
 
-    let resp = call_api::<Value>(&client, &req, path, &data).await?;
-    println!("{}", serde_json::to_string(&resp)?);
+    let resp = call_api::<Resp<AllStations>>(
+        &client,
+        &req,
+        "/v1/api/userStationList",
+        &json!({
+            "pageNo": 1,
+            "pageSize": 10,
+        }),
+    )
+    .await?;
+    let station = &resp.data.page.records[0];
+
+    let resp = call_api::<Resp<AllInverters>>(
+        &client,
+        &req,
+        "/v1/api/inverterList",
+        &json!({
+                "pageNo": 1,
+                "pageSize": 10,
+        }),
+    )
+    .await?;
+
+    let id = &resp.data.page.records[0].id;
+    let resp = call_api::<Resp<Value>>(
+        &client,
+        &req,
+        "/v1/api/inverterDetail",
+        &json!({
+            "id": id,
+        }),
+    )
+    .await?;
+    println!("{:#?}", resp.data);
     Ok(())
 }
 
@@ -37,6 +64,46 @@ struct Req {
     api: String,
     key: String,
     secret: String,
+}
+
+#[derive(Deserialize)]
+struct Resp<T> {
+    code: String,
+    msg: String,
+    data: T,
+    success: bool,
+}
+
+#[derive(Deserialize)]
+struct AllStations {
+    page: Pager<Station>,
+    // incomplete
+}
+
+#[derive(Deserialize)]
+struct AllInverters {
+    page: Pager<InverterLite>,
+    // incomplete
+}
+
+#[derive(Deserialize)]
+struct InverterLite {
+    id: String,
+    sn: String,
+    // incomplete
+}
+
+#[derive(Deserialize)]
+struct Pager<T> {
+    records: Vec<T>,
+    total: i64,
+    // incomplete
+}
+
+#[derive(Deserialize, Debug)]
+struct Station {
+    sno: String,
+    id: String,
 }
 
 async fn call_api<T: DeserializeOwned>(
