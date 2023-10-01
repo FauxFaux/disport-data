@@ -88,6 +88,18 @@ async fn publish_one(client: &Client, req: &Req, mqtt: &Mqtt, id: &str) -> Resul
         &resp.data,
     )
     .await?;
+    let mapped = map_detail(&resp.data)?;
+    for (k, v) in mapped {
+        mqtt.publish(
+            &Topic::new(
+                format!("soliscloud/inverter/{}/{}", id, k),
+                QoS::AtLeastOnce,
+                true,
+            ),
+            v,
+        )
+        .await?;
+    }
     Ok(())
 }
 
@@ -162,12 +174,14 @@ fn env_var(name: &'static str) -> Result<String> {
     env::var(name).with_context(|| anyhow!("reading env var {name:?}"))
 }
 
-fn map_detail(
-    detail: &HashMap<String, Value>,
-    seen_before: &mut HashSet<String>,
-) -> Result<HashMap<String, String>> {
+fn map_detail(detail: &HashMap<String, Value>) -> Result<HashMap<String, String>> {
     let mut m = HashMap::with_capacity(100);
     let mut rem = detail.clone();
+
+    let to_str = |v: Value| match v {
+        Value::String(s) => s,
+        other => other.to_string(),
+    };
 
     for (unit_field, unit) in detail.iter() {
         if !unit_field.ends_with("Str") {
@@ -181,11 +195,6 @@ fn map_detail(
         let Some(real_value) = rem.remove(real_field) else {
             continue;
         };
-        let real_value = match real_value {
-            Value::String(s) => s,
-            Value::Number(n) => n.to_string(),
-            _ => continue,
-        };
         let unit = unit.replace(|c: char| !c.is_ascii_alphanumeric(), "");
         if unit.is_empty() {
             continue;
@@ -197,21 +206,13 @@ fn map_detail(
                 real_field.to_case(Case::Snake),
                 unit.to_ascii_lowercase()
             ),
-            real_value,
+            to_str(real_value),
         );
     }
 
     for (k, v) in rem {
-        let k = k.to_case(Case::Snake);
-        let v = match v {
-            Value::String(s) => s,
-            Value::Number(n) => n.to_string(),
-            _ => continue,
-        };
-        m.insert(k, v);
+        m.insert(k.to_case(Case::Snake), to_str(v));
     }
-
-    m.retain(|k, v| seen_before.contains(k) || (v != "0" && v != "0.0"));
 
     Ok(m)
 }
@@ -219,18 +220,23 @@ fn map_detail(
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
-    use std::collections::HashSet;
 
     #[test]
     fn test_detail() -> Result<()> {
-        let mut before = HashSet::with_capacity(100);
-        let m = super::map_detail(
-            &serde_json::from_str(include_str!("../ref/inverterDetail.json"))?,
-            &mut before,
-        )?;
-        for (k, v) in m {
-            println!("{}: {}", k, v);
-        }
+        let m = super::map_detail(&serde_json::from_str(include_str!(
+            "../ref/inverterDetail.json"
+        ))?)?;
+        assert_eq!(
+            m.get("home_load_today_energy_kwh"),
+            Some(&"6.1".to_string())
+        );
         Ok(())
+    }
+
+    #[test]
+    fn test_to_string() {
+        assert_eq!("\"hello\"", serde_json::json!("hello").to_string());
+        assert_eq!("0.0", serde_json::json!(0.).to_string());
+        assert_eq!("0", serde_json::json!(0).to_string());
     }
 }
