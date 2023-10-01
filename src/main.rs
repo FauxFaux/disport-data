@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::time::Duration;
 
@@ -6,6 +6,7 @@ use anyhow::{anyhow, Context, Error, Result};
 use base64::engine::general_purpose::STANDARD as b64;
 use base64::Engine;
 use chrono::Utc;
+use convert_case::{Case, Casing};
 use hmac::Mac;
 use log::error;
 use mqtt_reeze::{Mqtt, QoS, Topic};
@@ -159,4 +160,77 @@ async fn call_api<T: DeserializeOwned>(
 
 fn env_var(name: &'static str) -> Result<String> {
     env::var(name).with_context(|| anyhow!("reading env var {name:?}"))
+}
+
+fn map_detail(
+    detail: &HashMap<String, Value>,
+    seen_before: &mut HashSet<String>,
+) -> Result<HashMap<String, String>> {
+    let mut m = HashMap::with_capacity(100);
+    let mut rem = detail.clone();
+
+    for (unit_field, unit) in detail.iter() {
+        if !unit_field.ends_with("Str") {
+            continue;
+        }
+        if unit_field.contains("Time") {
+            continue;
+        }
+        let real_field = unit_field.trim_end_matches("Str");
+        let Some(unit) = unit.as_str() else { continue };
+        let Some(real_value) = rem.remove(real_field) else {
+            continue;
+        };
+        let real_value = match real_value {
+            Value::String(s) => s,
+            Value::Number(n) => n.to_string(),
+            _ => continue,
+        };
+        let unit = unit.replace(|c: char| !c.is_ascii_alphanumeric(), "");
+        if unit.is_empty() {
+            continue;
+        }
+        rem.remove(unit_field);
+        m.insert(
+            format!(
+                "{}_{}",
+                real_field.to_case(Case::Snake),
+                unit.to_ascii_lowercase()
+            ),
+            real_value,
+        );
+    }
+
+    for (k, v) in rem {
+        let k = k.to_case(Case::Snake);
+        let v = match v {
+            Value::String(s) => s,
+            Value::Number(n) => n.to_string(),
+            _ => continue,
+        };
+        m.insert(k, v);
+    }
+
+    m.retain(|k, v| seen_before.contains(k) || (v != "0" && v != "0.0"));
+
+    Ok(m)
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::Result;
+    use std::collections::HashSet;
+
+    #[test]
+    fn test_detail() -> Result<()> {
+        let mut before = HashSet::with_capacity(100);
+        let m = super::map_detail(
+            &serde_json::from_str(include_str!("../ref/inverterDetail.json"))?,
+            &mut before,
+        )?;
+        for (k, v) in m {
+            println!("{}: {}", k, v);
+        }
+        Ok(())
+    }
 }
