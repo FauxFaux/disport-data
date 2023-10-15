@@ -1,7 +1,9 @@
-use crate::met::Weather::HeavyRainShower;
 use anyhow::{anyhow, bail, Result};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_aux::prelude::*;
+use std::ops::Add;
+use time::format_description::well_known::Iso8601;
+use time::Duration;
 
 #[derive(Deserialize)]
 struct Sites {
@@ -85,7 +87,7 @@ pub fn find_nearest(target: &geoutils::Location) -> Result<MetLocation> {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
-struct WeatherResponse {
+pub struct WeatherResponse {
     site_rep: SiteRep,
 }
 
@@ -136,24 +138,53 @@ struct Period {
     #[serde(rename = "value")]
     value: String,
     #[serde(rename = "Rep")]
-    rep: Vec<Value>,
+    rep: Vec<MetRep>,
 }
 
-struct MetObs {
+#[derive(Deserialize)]
+struct MetRep {
+    #[serde(rename = "T", deserialize_with = "deserialize_number_from_string")]
     temp_c: f64,
+    #[serde(rename = "F", deserialize_with = "deserialize_number_from_string")]
     feels_like_c: f64,
+    #[serde(rename = "S", deserialize_with = "deserialize_number_from_string")]
     wind_mph: f64,
+    #[serde(rename = "G", deserialize_with = "deserialize_number_from_string")]
     wind_gust_mph: f64,
-    wind_dir: char,
+    #[serde(rename = "D", deserialize_with = "deserialize_number_from_string")]
+    wind_dir: String,
+    #[serde(rename = "H", deserialize_with = "deserialize_number_from_string")]
     rel_humidity: f64,
-    visibility_km: f64,
+    #[serde(rename = "V")]
+    visibility: String,
+    #[serde(rename = "Pp", deserialize_with = "deserialize_number_from_string")]
     precip_prob: f64,
+    #[serde(rename = "U", deserialize_with = "deserialize_number_from_string")]
     max_uv: f64,
-    weather: Weather,
+    #[serde(rename = "W")]
+    weather: String,
+
+    #[serde(rename = "$", deserialize_with = "deserialize_number_from_string")]
+    mins: u32,
+}
+
+#[derive(Debug)]
+pub struct MetObs {
+    pub temp_c: f64,
+    pub feels_like_c: f64,
+    pub wind_mph: f64,
+    pub wind_gust_mph: f64,
+    pub wind_dir: String,
+    pub rel_humidity: f64,
+    pub visibility_km: f64,
+    pub precip_prob: f64,
+    pub max_uv: f64,
+    pub weather: Option<Weather>,
 }
 
 // https://www.metoffice.gov.uk/services/data/datapoint/code-definitions
-enum Weather {
+#[derive(Debug)]
+pub enum Weather {
     Clear,
     PartlyCloudy,
     Mist,
@@ -213,32 +244,45 @@ impl Weather {
     }
 }
 
-struct MetForecast {
+#[derive(Debug)]
+pub struct MetForecast {
     forecast: Vec<(time::OffsetDateTime, MetObs)>,
 }
 
 impl MetForecast {
-    fn from_response(resp: WeatherResponse) -> Result<MetForecast> {
+    pub fn from_response(resp: WeatherResponse) -> Result<MetForecast> {
         let mut forecast = Vec::new();
         for period in resp.site_rep.dv.location.period {
             for rep in period.rep {
+                let value = period
+                    .value
+                    .strip_suffix("Z")
+                    .ok_or(anyhow!("bad period value"))?;
+                let time = time::Date::parse(&value, &Iso8601::DEFAULT)?
+                    .midnight()
+                    .assume_utc()
+                    .add(Duration::minutes(i64::from(rep.mins)));
 
-                let time = time::OffsetDateTime::parse(
-                    &format!("{}T{}", period.value, rep.get("T")?.as_str().unwrap()),
-                    "%Y-%m-%dT%H:%M:%SZ",
-                )?;
                 let obs = MetObs {
-                    temp_c: rep.get("T")?.as_str().unwrap().parse::<f64>()?,
-                    feels_like_c: rep.get("F")?.as_str().unwrap().parse::<f64>()?,
-                    wind_mph: rep.get("S")?.as_str().unwrap().parse::<f64>()?,
-                    wind_gust_mph: rep.get("G")?.as_str().unwrap().parse::<f64>()?,
-                    wind_dir: rep.get("D")?.as_str().unwrap().chars().next().unwrap(),
-                    rel_humidity: rep.get("H")?.as_str().unwrap().parse::<f64>()?,
-                    visibility_km: rep.get("V")?.as_str().unwrap().parse::<f64>()?,
-                    precip_prob: rep.get("Pp")?.as_str().unwrap().parse::<f64>()?,
-                    max_uv: rep.get("U")?.as_str().unwrap().parse::<f64>()?,
-                    weather: Weather::from_code(rep.get("W")?.as_str().unwrap())?
-                        .ok_or(anyhow!("no weather code"))?,
+                    temp_c: rep.temp_c,
+                    feels_like_c: rep.feels_like_c,
+                    wind_mph: rep.wind_mph,
+                    wind_gust_mph: rep.wind_gust_mph,
+                    wind_dir: rep.wind_dir.to_string(),
+                    rel_humidity: rep.rel_humidity,
+                    visibility_km: match rep.visibility.as_str() {
+                        "UN" => f64::NAN,
+                        "VP" => 0.5,
+                        "PO" => 2.,
+                        "MO" => 6.,
+                        "GO" => 15.,
+                        "VG" => 30.,
+                        "EX" => 60.,
+                        other => bail!("unknown visibility code {}", other),
+                    },
+                    precip_prob: rep.precip_prob,
+                    max_uv: rep.max_uv,
+                    weather: Weather::from_code(&rep.weather)?,
                 };
                 forecast.push((time, obs));
             }
@@ -262,6 +306,7 @@ mod tests {
     fn test_response() {
         let resp: WeatherResponse =
             serde_json::from_str(include_str!("../tests/ref/met-folkes.json")).unwrap();
-        // assert_eq!(resp.site_rep.dv.data_type, "Forecast");
+        let forecast = MetForecast::from_response(resp).unwrap();
+        assert_eq!(forecast.forecast[0].0.unix_timestamp(), 1696604400);
     }
 }

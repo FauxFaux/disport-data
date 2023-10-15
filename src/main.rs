@@ -6,7 +6,7 @@ use rusqlite::ToSql;
 use serde_json::Value;
 
 use crate::config::Config;
-use crate::met::find_nearest;
+use crate::met::{find_nearest, MetForecast, WeatherResponse};
 
 mod config;
 mod met;
@@ -20,7 +20,13 @@ async fn main() -> Result<()> {
 
     if let Some(met) = config.met {
         let loc = Location::new(config.loc.lat, config.loc.lon);
-        println!("{:?}", find_nearest(&loc)?);
+        let station = find_nearest(&loc)?;
+        let resp: WeatherResponse = http.get(format!(
+            "http://datapoint.metoffice.gov.uk/public/data/val/wxfcs/all/json/{}?res=3hourly&key={}",
+            station.id, met.key
+        )).send().await?.error_for_status()?.json().await?;
+        let forecast = MetForecast::from_response(resp)?;
+        println!("{station:?} - {forecast:?}");
     }
 
     return Ok(());
