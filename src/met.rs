@@ -3,7 +3,7 @@ use serde::Deserialize;
 use serde_aux::prelude::*;
 use std::ops::Add;
 use time::format_description::well_known::Iso8601;
-use time::Duration;
+use time::{Duration, OffsetDateTime};
 
 #[derive(Deserialize)]
 struct Sites {
@@ -246,12 +246,14 @@ impl Weather {
 
 #[derive(Debug)]
 pub struct MetForecast {
-    forecast: Vec<(time::OffsetDateTime, MetObs)>,
+    pub data_date: OffsetDateTime,
+    pub forecast: Vec<(OffsetDateTime, MetObs)>,
 }
 
 impl MetForecast {
     pub fn from_response(resp: WeatherResponse) -> Result<MetForecast> {
         let mut forecast = Vec::new();
+        let data_date = OffsetDateTime::parse(&resp.site_rep.dv.data_date, &Iso8601::DEFAULT)?;
         for period in resp.site_rep.dv.location.period {
             for rep in period.rep {
                 let value = period
@@ -287,7 +289,10 @@ impl MetForecast {
                 forecast.push((time, obs));
             }
         }
-        Ok(MetForecast { forecast })
+        Ok(MetForecast {
+            data_date,
+            forecast,
+        })
     }
 }
 
