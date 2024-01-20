@@ -199,6 +199,21 @@ fn map_detail(detail: &HashMap<String, Value>) -> Result<HashMap<String, String>
         if unit.is_empty() {
             continue;
         }
+
+        let (mul, unit) = match unit.as_str() {
+            "Wh" => (0.001, "kWh"),
+            "MWh" => (1_000., "kWh"),
+            "GWh" => (1_000_000., "kWh"),
+            other => (1., other),
+        };
+
+        let real_value = match real_value {
+            Value::Number(n) => {
+                json!(n.as_f64().expect("all numbers are f64 without features") * mul)
+            }
+            other => other,
+        };
+
         rem.remove(unit_field);
         m.insert(
             format!(
@@ -229,6 +244,20 @@ mod tests {
         assert_eq!(
             m.get("home_load_today_energy_kwh"),
             Some(&"6.1".to_string())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_unit_flip() -> Result<()> {
+        let m = super::map_detail(&serde_json::from_str(include_str!("../ref/unitFlip.json"))?)?;
+        assert_eq!(
+            m.get("home_load_total_energy_kwh"),
+            Some(&"1377.0".to_string())
+        );
+        assert_eq!(
+            m.get("home_load_yesterday_energy_kwh"),
+            Some(&"12.9".to_string())
         );
         Ok(())
     }
