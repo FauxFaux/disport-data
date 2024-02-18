@@ -1,10 +1,10 @@
-use std::fs;
 use std::time::Duration;
 
 use anyhow::Result;
 use reqwest::Client;
 
 use crate::config::Config;
+use crate::vm::{FullName, Obs};
 
 mod config;
 mod met;
@@ -19,7 +19,7 @@ enum Service {
 }
 
 impl Service {
-    async fn run(&self, http: &Client) -> Result<()> {
+    async fn run(&self, http: &Client) -> Result<Vec<(FullName, Obs)>> {
         match self {
             Service::SolisCloud(svc) => soliscloud::run(http, &svc).await,
             Service::Met(svc) => met::run(http, &svc).await,
@@ -68,9 +68,15 @@ async fn main() -> Result<()> {
         }));
     }
 
+    let mut buf = Vec::with_capacity(4096);
     for svc in &svcs {
-        svc.run(&http).await?;
+        let produced = svc.run(&http).await?;
+        for (name, obs) in produced {
+            vm::write_metric(&mut buf, &name, &[obs])?;
+        }
     }
+
+    println!("{}", String::from_utf8_lossy(&buf));
 
     Ok(())
 }

@@ -1,18 +1,21 @@
 use std::collections::HashMap;
 use std::env;
+use std::hash::Hash;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use base64::engine::general_purpose::STANDARD as b64;
 use base64::Engine;
-use chrono::Utc;
+use chrono::{TimeDelta, TimeZone, Utc};
 use convert_case::{Case, Casing};
 use hmac::Mac;
+use log::warn;
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::config::Solis;
+use crate::vm::{FullName, Obs};
 
 type HmacSha1 = hmac::Hmac<sha1::Sha1>;
 
@@ -47,9 +50,10 @@ pub async fn warmup(http: &Client, config: Solis) -> Result<Service> {
     })
 }
 
-pub async fn run(http: &Client, solis: &Service) -> Result<()> {
+pub async fn run(http: &Client, solis: &Service) -> Result<Vec<(FullName, Obs)>> {
+    let mut ret = Vec::with_capacity(300);
     for id in &solis.inverter_ids {
-        let resp = call_api::<Resp<HashMap<String, Value>>>(
+        let mut resp = call_api::<Resp<HashMap<String, Value>>>(
             &http,
             &solis.config,
             "/v1/api/inverterDetail",
@@ -59,10 +63,53 @@ pub async fn run(http: &Client, solis: &Service) -> Result<()> {
         )
         .await?;
 
-        let mapped = map_detail(&resp.data)?;
+        let ts = match resp.data.remove("dataTimestamp") {
+            Some(Value::String(s)) => s.parse::<i64>().ok(),
+            Some(Value::Number(n)) => n.as_i64(),
+            _ => None,
+        }
+        .and_then(|n| Utc.timestamp_millis_opt(n).single());
+
+        let ts = match ts {
+            Some(ts) if (ts - Utc::now()).abs() < TimeDelta::minutes(10) => Some(ts),
+            Some(ts) => {
+                warn!("timestamp {ts:?} too far from now");
+                None
+            }
+            None => {
+                warn!("no timestamp in response");
+                None
+            }
+        }
+        .unwrap_or_else(Utc::now);
+
+        for (k, v) in map(&resp.data)? {
+            ret.push((
+                FullName::new(format!("soliscloud_{k}"), [("id", id)]),
+                Obs::new(v, ts),
+            ));
+        }
     }
 
-    Ok(())
+    Ok(ret)
+}
+
+pub fn map(detail: &HashMap<String, Value>) -> Result<HashMap<String, f64>> {
+    let (good, bad) = opinionated(detail)?;
+    let mut ret = HashMap::with_capacity(good.len() + bad.len());
+    for (k, v) in good {
+        ret.insert(format!("soliscloud_{k}"), v);
+    }
+
+    let bad = map_detail(&bad)?;
+
+    for (k, v) in bad {
+        if let Some(v) = v.parse::<f64>().ok() {
+            ret.insert(format!("soliscloud_raw_{k}"), v);
+        }
+    }
+
+    Ok(ret)
 }
 
 #[derive(Deserialize)]
@@ -188,6 +235,109 @@ fn map_detail(detail: &HashMap<String, Value>) -> Result<HashMap<String, String>
     Ok(m)
 }
 
+fn opinionated(
+    detail: &HashMap<String, Value>,
+) -> Result<(HashMap<String, f64>, HashMap<String, Value>)> {
+    let mut rem = detail.clone();
+
+    // leaving just 0 (the primary / only mppt string)
+    for i in 1..40 {
+        for k in &[
+            "iPv", "mpptIpv", "mpptIpv", "mpptPow", "mpptUpv", "pow", "uPv",
+        ] {
+            rem.remove(&format!("{k}{i}"));
+            rem.remove(&format!("{k}{i}Str"));
+        }
+    }
+
+    for secret in ["sn", "sno", "userId"] {
+        let _ = rem.remove(secret);
+    }
+
+    let mut m = HashMap::with_capacity(100);
+    let mut with_units = HashMap::with_capacity(200);
+    for (k, _) in rem.clone() {
+        if k.ends_with("Str") {
+            continue;
+        }
+        if k.contains("Time") {
+            continue;
+        }
+        let Some(unit) = rem.remove(&format!("{}Str", k)) else {
+            continue;
+        };
+        let value = rem.remove(&k).expect("unmodified input list");
+        let value = value
+            .as_f64()
+            .ok_or_else(|| anyhow!("value for {k} not a number: {value:?}"))?;
+        let unit = unit.as_str().ok_or_else(|| anyhow!("unit not a string"))?;
+        with_units.insert(k, (value, unit.to_string()));
+    }
+
+    let periods = ["Total", "Year", "Month", "Yesterday", "Today", ""];
+
+    for class in [
+        "backup",
+        "gridPurchased",
+        "gridSell",
+        "homeGrid",
+        "homeLoad",
+        "generator",
+    ] {
+        for period in periods {
+            let k = format!("{class}{period}Energy");
+            let Some((value, unit)) = with_units.remove(&k) else {
+                continue;
+            };
+            let value = to_kwh(value, &unit).with_context(|| anyhow!("processing {k:?}"))?;
+            m.insert(
+                format!(
+                    "energy_{}_{}_kwh",
+                    class.to_case(Case::Snake),
+                    period.to_ascii_lowercase()
+                ),
+                value,
+            );
+        }
+    }
+
+    for direction in ["Charge", "Discharge"] {
+        for period in periods {
+            let k = format!("battery{period}{direction}Energy");
+            let Some((value, unit)) = with_units.remove(&k) else {
+                continue;
+            };
+            let value = to_kwh(value, &unit).with_context(|| anyhow!("processing {k:?}"))?;
+            m.insert(
+                format!(
+                    "energy_battery_{}_{}_kwh",
+                    direction.to_ascii_lowercase(),
+                    period.to_ascii_lowercase()
+                ),
+                value,
+            );
+        }
+    }
+
+    // HACK: restoring 'rem', so the legacy support can continue to work
+    for (k, (value, unit)) in with_units {
+        rem.insert(format!("{k}Str"), json!(unit));
+        rem.insert(k, json!(value));
+    }
+
+    Ok((m, rem))
+}
+
+fn to_kwh(v: f64, unit: &str) -> Result<f64> {
+    Ok(match unit {
+        "Wh" => v * 0.001,
+        "kWh" => v,
+        "MWh" => v * 1_000.,
+        "GWh" => v * 1_000_000.,
+        other => bail!("unknown power unit: {other:?} for value {v:?}"),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
@@ -201,6 +351,19 @@ mod tests {
             m.get("home_load_today_energy_kwh"),
             Some(&"6.1".to_string())
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_opinion() -> Result<()> {
+        let (good, bad) = super::opinionated(&serde_json::from_str(include_str!(
+            "../tests/ref/soliscloud/inverterDetail.json"
+        ))?)?;
+        let bad = super::map_detail(&bad)?;
+        assert_eq!(good.get("energy_home_load_today_kwh"), Some(&6.1));
+        println!("{:#?}", bad);
+        assert_eq!(bad.get("family_load_power_kw"), Some(&"0.809".to_string()));
+        assert_eq!(bad.get("family_load_power_pec"), Some(&"1".to_string()));
         Ok(())
     }
 

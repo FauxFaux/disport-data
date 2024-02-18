@@ -1,4 +1,5 @@
 use crate::config::Loc;
+use crate::vm::{FullName, Obs};
 use anyhow::{anyhow, bail, Result};
 use serde::Deserialize;
 use serde_aux::prelude::*;
@@ -11,7 +12,7 @@ pub struct Service {
     pub key: String,
 }
 
-pub async fn run(http: &reqwest::Client, svc: &Service) -> Result<()> {
+pub async fn run(http: &reqwest::Client, svc: &Service) -> Result<Vec<(FullName, Obs)>> {
     let loc = geoutils::Location::new(svc.loc.lat, svc.loc.lon);
     let station = find_nearest(&loc)?;
     let resp: WeatherResponse = http
@@ -27,7 +28,7 @@ pub async fn run(http: &reqwest::Client, svc: &Service) -> Result<()> {
     let forecast = MetForecast::from_response(resp)?;
     println!("{station:?} - {forecast:?}");
 
-    Ok(())
+    Ok(Vec::new())
 
     // a period runs from 21:30 yesterday -> 21:30 today
     // chosen due to sunset. or just use actual sunset?

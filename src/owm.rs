@@ -3,13 +3,14 @@ use reqwest::Client;
 use serde_json::Value;
 
 use crate::config::Loc;
+use crate::vm::{FullName, Obs};
 
 pub struct Service {
     pub loc: Loc,
     pub key: String,
 }
 
-pub async fn run(http: &Client, svc: &Service) -> Result<()> {
+pub async fn run(http: &Client, svc: &Service) -> Result<Vec<(FullName, Obs)>> {
     let resp: Value = http
         .get(format!(
             "https://api.openweathermap.org/data/3.0/onecall?lat={lat}&lon={lon}&appid={key}",
@@ -23,5 +24,5 @@ pub async fn run(http: &Client, svc: &Service) -> Result<()> {
         .json()
         .await?;
     println!("{}", serde_json::to_string_pretty(&resp)?);
-    Ok(())
+    Ok(Vec::new())
 }

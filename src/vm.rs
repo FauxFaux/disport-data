@@ -1,6 +1,7 @@
 use std::io::Write;
 
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use serde_json::json;
 
 pub struct FullName(serde_json::Map<String, serde_json::Value>);
@@ -31,11 +32,15 @@ pub struct Obs {
 }
 
 impl Obs {
-    pub fn now(value: f64) -> Self {
+    pub fn new(value: f64, when: DateTime<Utc>) -> Self {
         Obs {
             value,
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: when.timestamp_millis(),
         }
+    }
+
+    pub fn now(value: f64) -> Self {
+        Obs::new(value, Utc::now())
     }
 }
 
