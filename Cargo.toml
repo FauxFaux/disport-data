@@ -10,7 +10,6 @@ chrono = "0.4"
 convert_case = "0.6"
 geoutils = "0.5.1"
 hmac = "0.12"
-influxdb = { version = "0.7.1", features = ["derive"] }
 log = "0.4"
 md5 = "0.7"
 pretty_env_logger = "0.5"

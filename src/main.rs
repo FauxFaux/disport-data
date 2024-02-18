@@ -34,7 +34,7 @@ async fn main() -> Result<()> {
     let solis_config = soliscloud::load_config()?;
     let config: Config = toml::from_str(&fs::read_to_string("config.toml")?)?;
 
-    let http = reqwest::Client::new();
+    let http = Client::new();
     let archive = rusqlite::Connection::open("archive.db")?;
     migrate(&archive)?;
     let mut svcs = Vec::new();
