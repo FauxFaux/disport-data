@@ -9,7 +9,7 @@ pub struct Config {
     pub met: Option<Met>,
 }
 
-#[derive(Deserialize)]
+#[derive(Copy, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Loc {
     pub lat: f64,

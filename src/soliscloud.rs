@@ -22,12 +22,12 @@ pub fn load_config() -> Result<Req> {
     })
 }
 
-pub struct SolisCloud {
+pub struct Service {
     config: Req,
     inverter_ids: Vec<String>,
 }
 
-pub async fn warmup(http: &Client, config: &Req) -> Result<SolisCloud> {
+pub async fn warmup(http: &Client, config: &Req) -> Result<Service> {
     let resp = call_api::<Resp<AllInverters>>(
         &http,
         &config,
@@ -47,13 +47,13 @@ pub async fn warmup(http: &Client, config: &Req) -> Result<SolisCloud> {
         .map(|i| i.id.clone())
         .collect::<Vec<_>>();
 
-    Ok(SolisCloud {
+    Ok(Service {
         config: config.clone(),
         inverter_ids,
     })
 }
 
-pub async fn run(http: &Client, solis: &SolisCloud) -> Result<()> {
+pub async fn run(http: &Client, solis: &Service) -> Result<()> {
     for id in &solis.inverter_ids {
         let resp = call_api::<Resp<HashMap<String, Value>>>(
             &http,

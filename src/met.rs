@@ -1,9 +1,62 @@
+use crate::config::Loc;
 use anyhow::{anyhow, bail, Result};
 use serde::Deserialize;
 use serde_aux::prelude::*;
 use std::ops::Add;
 use time::format_description::well_known::Iso8601;
 use time::{Duration, OffsetDateTime};
+
+pub struct Service {
+    pub loc: Loc,
+    pub key: String,
+}
+
+pub async fn run(http: &reqwest::Client, svc: &Service) -> Result<()> {
+    let loc = geoutils::Location::new(svc.loc.lat, svc.loc.lon);
+    let station = find_nearest(&loc)?;
+    let resp: WeatherResponse = http
+        .get(format!(
+        "http://datapoint.metoffice.gov.uk/public/data/val/wxfcs/all/json/{}?res=3hourly&key={}",
+        station.id, svc.key
+    ))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let forecast = MetForecast::from_response(resp)?;
+    println!("{station:?} - {forecast:?}");
+
+    Ok(())
+
+    // a period runs from 21:30 yesterday -> 21:30 today
+    // chosen due to sunset. or just use actual sunset?
+    // probably 21:30 local. When do the met 3h forecasts happen? Want to not line up with those to some extent.
+    // otoh, forecast at 9pm isn't particularly relevant; we're focusing on the 6am-6pm period.
+
+    // period: the day we're talking about, either today (before sunset) (0) or tomorrow (1), etc.
+    // time: the time on that day (timezone?)
+    // source: where the forecast came from, met, owm, etc.
+    // advance: how far in advance the forecast was made, 3h, 6h, etc. Round to nearest hour?
+    // value: the actual value
+    // cloud_cover{period: 0, time: 14:00, source: met, advance: 3h} 77%
+
+    // Can we query this? mean(cloud_cover(period=0, time=14:00, advance: 0h)) is the average of everyone's
+    // actual value, where advance:0 means actual?
+
+    // negative advances, does anyone change their actual after the fact?
+    // most apis probably just don't have actual
+
+    // Is this a query you can write? `select mean(cloud_cover(period=0, time=14:00, advance: 1-3h))`
+    // Is this a query you can write? `graph cloud_cover(period=0, time=14:00, source: met) by advance`
+
+    // in theory you can work out the advance from the observation time in influx. is that easier or harder to query?
+
+    // round all times to the nearest hour?
+
+    // cloud cover is a derived metric, should we be met_cloud_cover, owm_cloud_cover; then the derived value?
+    // or are we going to re-derive it from the json if it's boned?
+}
 
 #[derive(Deserialize)]
 struct Sites {
