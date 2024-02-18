@@ -1,4 +1,4 @@
-use std::collections::{HashMap};
+use std::collections::HashMap;
 use std::env;
 
 use anyhow::{anyhow, Context, Result};
@@ -37,7 +37,7 @@ pub async fn warmup(http: &Client, config: &Req) -> Result<SolisCloud> {
                 "pageSize": 10,
         }),
     )
-        .await?;
+    .await?;
 
     let inverter_ids = resp
         .data
@@ -60,10 +60,10 @@ pub async fn run(http: &Client, solis: &SolisCloud) -> Result<()> {
             &solis.config,
             "/v1/api/inverterDetail",
             &json!({
-            "id": id,
-        }),
+                "id": id,
+            }),
         )
-            .await?;
+        .await?;
 
         let mapped = map_detail(&resp.data)?;
     }
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn test_detail() -> Result<()> {
         let m = super::map_detail(&serde_json::from_str(include_str!(
-            "ref/inverterDetail.json"
+            "../tests/ref/soliscloud/inverterDetail.json"
         ))?)?;
         assert_eq!(
             m.get("home_load_today_energy_kwh"),
@@ -219,7 +219,9 @@ mod tests {
 
     #[test]
     fn test_unit_flip() -> Result<()> {
-        let m = super::map_detail(&serde_json::from_str(include_str!("ref/unitFlip.json"))?)?;
+        let m = super::map_detail(&serde_json::from_str(include_str!(
+            "../tests/ref/soliscloud/unitFlip.json"
+        ))?)?;
         assert_eq!(
             m.get("home_load_total_energy_kwh"),
             Some(&"1377.0".to_string())
