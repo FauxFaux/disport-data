@@ -3,23 +3,24 @@ use std::io::Write;
 use anyhow::Result;
 use serde_json::json;
 
-pub struct FullName {
-    name: String,
-    labels: Box<[(String, String)]>,
-}
+pub struct FullName(serde_json::Map<String, serde_json::Value>);
 
 impl FullName {
     pub fn new(
         name: impl ToString,
         labels: impl IntoIterator<Item = (impl ToString, impl ToString)>,
     ) -> Self {
-        FullName {
-            name: name.to_string(),
-            labels: labels
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect(),
+        let labels = labels.into_iter();
+        let mut map = serde_json::Map::with_capacity(labels.size_hint().1.unwrap_or(0) + 1);
+        for (k, v) in labels {
+            let k = k.to_string();
+            assert_ne!(k, "__name__");
+            map.insert(k, json!(v.to_string()));
         }
+
+        map.insert("__name__".to_string(), json!(name.to_string()));
+
+        FullName(map)
     }
 }
 
@@ -39,23 +40,13 @@ impl Obs {
 }
 
 pub fn write_metric(mut write: impl Write, name: &FullName, obs: &[Obs]) -> Result<()> {
-    let mut metric = serde_json::Map::with_capacity(name.labels.len() + 1);
-    for (k, v) in name.labels.as_ref() {
-        metric.insert(k.clone(), serde_json::Value::String(v.clone()));
-    }
-
-    metric.insert(
-        "__name__".to_string(),
-        serde_json::Value::String(name.name.clone()),
-    );
-
-    let values = obs.iter().map(|o| json!(o.value)).collect::<Vec<_>>();
-    let timestamps = obs.iter().map(|o| json!(o.timestamp)).collect::<Vec<_>>();
+    let values = obs.iter().map(|o| o.value).collect::<Vec<_>>();
+    let timestamps = obs.iter().map(|o| o.timestamp).collect::<Vec<_>>();
 
     serde_json::to_writer(
         &mut write,
         &json!({
-            "metric": metric,
+            "metric": name.0,
             "values": values,
             "timestamps": timestamps,
         }),

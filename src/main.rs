@@ -1,4 +1,5 @@
 use std::fs;
+use std::time::Duration;
 
 use anyhow::Result;
 use reqwest::Client;
@@ -31,15 +32,29 @@ impl Service {
 async fn main() -> Result<()> {
     pretty_env_logger::init_timed();
 
-    let solis_config = soliscloud::load_config()?;
-    let config: Config = toml::from_str(&fs::read_to_string("config.toml")?)?;
+    let config = ::config::Config::builder()
+        .add_source(::config::File::with_name(".env.toml"))
+        .add_source(::config::Environment::with_prefix("DISPORT").separator("_"))
+        .build()?;
 
-    let http = Client::new();
+    let config: Config = serde_path_to_error::deserialize(config)?;
+
+    let http = reqwest::ClientBuilder::default()
+        .user_agent(concat!(
+            env!("CARGO_PKG_NAME"),
+            "/",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .timeout(Duration::from_secs(30))
+        .build()?;
+
     let mut svcs = Vec::new();
 
-    svcs.push(Service::SolisCloud(
-        soliscloud::warmup(&http, &solis_config).await?,
-    ));
+    if let Some(solis_cloud) = config.solis_cloud {
+        svcs.push(Service::SolisCloud(
+            soliscloud::warmup(&http, solis_cloud).await?,
+        ));
+    }
     if let Some(met) = config.met {
         svcs.push(Service::Met(met::Service {
             loc: config.loc,

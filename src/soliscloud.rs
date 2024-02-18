@@ -12,22 +12,16 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::config::Solis;
+
 type HmacSha1 = hmac::Hmac<sha1::Sha1>;
 
-pub fn load_config() -> Result<Req> {
-    Ok(Req {
-        api: env_var("SOLIS_API")?.trim_end_matches('/').to_string(),
-        key: env_var("SOLIS_KEY")?,
-        secret: env_var("SOLIS_SECRET")?,
-    })
-}
-
 pub struct Service {
-    config: Req,
+    config: Solis,
     inverter_ids: Vec<String>,
 }
 
-pub async fn warmup(http: &Client, config: &Req) -> Result<Service> {
+pub async fn warmup(http: &Client, config: Solis) -> Result<Service> {
     let resp = call_api::<Resp<AllInverters>>(
         &http,
         &config,
@@ -48,7 +42,7 @@ pub async fn warmup(http: &Client, config: &Req) -> Result<Service> {
         .collect::<Vec<_>>();
 
     Ok(Service {
-        config: config.clone(),
+        config,
         inverter_ids,
     })
 }
@@ -69,13 +63,6 @@ pub async fn run(http: &Client, solis: &Service) -> Result<()> {
     }
 
     Ok(())
-}
-
-#[derive(Clone)]
-pub struct Req {
-    api: String,
-    key: String,
-    secret: String,
 }
 
 #[derive(Deserialize)]
@@ -113,8 +100,8 @@ struct Station {
 }
 
 async fn call_api<T: DeserializeOwned>(
-    client: &reqwest::Client,
-    req: &Req,
+    http: &Client,
+    cfg: &Solis,
     path: &str,
     data: &impl Serialize,
 ) -> Result<T> {
@@ -123,14 +110,14 @@ async fn call_api<T: DeserializeOwned>(
     // TODO: +0000 instead of 'GMT'? Doesn't seem to care
     let now = Utc::now().to_rfc2822();
     let param = format!("POST\n{md5}\napplication/json\n{now}\n{path}");
-    let mut mac = HmacSha1::new_from_slice(req.secret.as_bytes())?;
+    let mut mac = HmacSha1::new_from_slice(cfg.secret.as_bytes())?;
     mac.update(param.as_bytes());
     let signature = b64.encode(mac.finalize().into_bytes());
-    let resp = client
-        .post(format!("{}{path}", req.api))
+    let resp = http
+        .post(format!("{}{path}", cfg.api))
         .header("Content-Type", "application/json;charset=utf-8")
         .header("Date", now)
-        .header("Authorization", format!("API {}:{signature}", req.key))
+        .header("Authorization", format!("API {}:{signature}", cfg.key))
         .header("Content-MD5", md5)
         .body(data)
         .send()

@@ -6,6 +6,8 @@ pub struct Config {
     pub loc: Loc,
     pub owm: Option<Owm>,
     pub met: Option<Met>,
+    #[serde(rename = "soliscloud")]
+    pub solis_cloud: Option<Solis>,
 }
 
 #[derive(Copy, Clone, Deserialize)]
@@ -28,4 +30,12 @@ pub struct Owm {
 #[serde(deny_unknown_fields)]
 pub struct Met {
     pub key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Solis {
+    pub api: String,
+    pub key: String,
+    pub secret: String,
 }
