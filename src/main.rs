@@ -9,6 +9,7 @@ mod config;
 mod met;
 mod owm;
 mod soliscloud;
+mod vm;
 
 enum Service {
     SolisCloud(soliscloud::Service),
