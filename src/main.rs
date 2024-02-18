@@ -10,6 +10,7 @@ use crate::met::{find_nearest, MetForecast, WeatherResponse};
 
 mod config;
 mod met;
+mod soliscloud;
 
 #[tokio::main]
 async fn main() -> Result<()> {
