@@ -1,15 +1,12 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap};
 use std::env;
-use std::time::Duration;
 
-use anyhow::{anyhow, Context, Error, Result};
+use anyhow::{anyhow, Context, Result};
 use base64::engine::general_purpose::STANDARD as b64;
 use base64::Engine;
 use chrono::Utc;
 use convert_case::{Case, Casing};
 use hmac::Mac;
-use log::error;
-use mqtt_reeze::{Mqtt, QoS, Topic};
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -17,32 +14,30 @@ use serde_json::{json, Value};
 
 type HmacSha1 = hmac::Hmac<sha1::Sha1>;
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    pretty_env_logger::init_timed();
+pub fn load_config() -> Result<Req> {
+    Ok(Req {
+        api: env_var("SOLIS_API")?.trim_end_matches('/').to_string(),
+        key: env_var("SOLIS_KEY")?,
+        secret: env_var("SOLIS_SECRET")?,
+    })
+}
 
-    let req = {
-        Req {
-            api: env_var("SOLIS_API")?.trim_end_matches('/').to_string(),
-            key: env_var("SOLIS_KEY")?,
-            secret: env_var("SOLIS_SECRET")?,
-        }
-    };
+pub struct SolisCloud {
+    config: Req,
+    inverter_ids: Vec<String>,
+}
 
-    let mqtt = Mqtt::new_from_env("soliscloud-mqtt").context("creating mqtt client")?;
-
-    let client = reqwest::Client::new();
-
+pub async fn warmup(http: &Client, config: &Req) -> Result<SolisCloud> {
     let resp = call_api::<Resp<AllInverters>>(
-        &client,
-        &req,
+        &http,
+        &config,
         "/v1/api/inverterList",
         &json!({
                 "pageNo": 1,
                 "pageSize": 10,
         }),
     )
-    .await?;
+        .await?;
 
     let inverter_ids = resp
         .data
@@ -52,58 +47,32 @@ async fn main() -> Result<()> {
         .map(|i| i.id.clone())
         .collect::<Vec<_>>();
 
-    let err: Error = 'app: loop {
-        for id in &inverter_ids {
-            if let Err(err) = publish_one(&client, &req, &mqtt, id).await {
-                break 'app err;
-            }
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
-        tokio::time::sleep(Duration::from_secs(60)).await;
-    };
-
-    error!("Something failed, trying to shutdown: {:?}", err);
-
-    mqtt.finish().await?;
-
-    Err(err).context("running app")
+    Ok(SolisCloud {
+        config: config.clone(),
+        inverter_ids,
+    })
 }
 
-async fn publish_one(client: &Client, req: &Req, mqtt: &Mqtt, id: &str) -> Result<()> {
-    let resp = call_api::<Resp<HashMap<String, Value>>>(
-        &client,
-        &req,
-        "/v1/api/inverterDetail",
-        &json!({
+pub async fn run(http: &Client, solis: &SolisCloud) -> Result<()> {
+    for id in &solis.inverter_ids {
+        let resp = call_api::<Resp<HashMap<String, Value>>>(
+            &http,
+            &solis.config,
+            "/v1/api/inverterDetail",
+            &json!({
             "id": id,
         }),
-    )
-    .await?;
-    mqtt.publish_json(
-        &Topic::new(
-            format!("soliscloud/inverter/{}/detail", id),
-            QoS::AtLeastOnce,
-            true,
-        ),
-        &resp.data,
-    )
-    .await?;
-    let mapped = map_detail(&resp.data)?;
-    for (k, v) in mapped {
-        mqtt.publish(
-            &Topic::new(
-                format!("soliscloud/inverter/{}/{}", id, k),
-                QoS::AtLeastOnce,
-                true,
-            ),
-            v,
         )
-        .await?;
+            .await?;
+
+        let mapped = map_detail(&resp.data)?;
     }
+
     Ok(())
 }
 
-struct Req {
+#[derive(Clone)]
+pub struct Req {
     api: String,
     key: String,
     secret: String,

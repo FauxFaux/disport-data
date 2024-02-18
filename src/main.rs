@@ -14,10 +14,17 @@ mod soliscloud;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    pretty_env_logger::init_timed();
+
+    let solis_config = soliscloud::load_config()?;
+
     let config: Config = toml::from_str(&fs::read_to_string("config.toml")?)?;
     let http = reqwest::Client::new();
     let archive = rusqlite::Connection::open("archive.db")?;
     migrate(&archive)?;
+
+    let solis_obj = soliscloud::warmup(&http, &solis_config).await?;
+    let solis_result = soliscloud::run(&http, &solis_obj).await?;
 
     if let Some(met) = config.met {
         let loc = Location::new(config.loc.lat, config.loc.lon);
