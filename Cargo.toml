@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
-base64 = "0.21"
+base64 = "0.22"
 chrono = "0.4"
 config = { version = "0.14", features = ["toml"], default-features = false  }
 convert_case = "0.6"
