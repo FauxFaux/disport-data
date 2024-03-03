@@ -319,6 +319,18 @@ fn opinionated(
         }
     }
 
+    if let Some(v) = rem.remove("batteryCapacitySoc") {
+        m.insert(
+            "battery_soc".to_string(),
+            v.as_f64().ok_or_else(|| anyhow!("non-numeric soc"))?,
+        );
+    }
+
+    if let Some((val, unit)) = with_units.remove("batteryPower") {
+        let val = to_watt(val, &unit).with_context(|| anyhow!("processing batteryPower"))?;
+        m.insert("battery_w".to_string(), val);
+    }
+
     // HACK: restoring 'rem', so the legacy support can continue to work
     for (k, (value, unit)) in with_units {
         rem.insert(format!("{k}Str"), json!(unit));
@@ -334,6 +346,16 @@ fn to_kwh(v: f64, unit: &str) -> Result<f64> {
         "kWh" => v,
         "MWh" => v * 1_000.,
         "GWh" => v * 1_000_000.,
+        other => bail!("unknown energy unit: {other:?} for value {v:?}"),
+    })
+}
+
+fn to_watt(v: f64, unit: &str) -> Result<f64> {
+    Ok(match unit {
+        "W" => v,
+        "kW" => v * 1_000.,
+        "MW" => v * 1_000_000.,
+        "GW" => v * 1_000_000_000.,
         other => bail!("unknown power unit: {other:?} for value {v:?}"),
     })
 }
@@ -341,6 +363,7 @@ fn to_kwh(v: f64, unit: &str) -> Result<f64> {
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
+    use std::collections::HashMap;
 
     #[test]
     fn test_detail() -> Result<()> {
@@ -362,6 +385,7 @@ mod tests {
         let bad = super::map_detail(&bad)?;
         assert_eq!(good.get("energy_home_load_today_kwh"), Some(&6.1));
         println!("{:#?}", bad);
+        // assert_eq!(bad, HashMap::new());
         assert_eq!(bad.get("family_load_power_kw"), Some(&"0.809".to_string()));
         assert_eq!(bad.get("family_load_power_pec"), Some(&"1".to_string()));
         Ok(())
