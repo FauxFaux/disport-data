@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::env;
 use std::hash::Hash;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, ensure, Context, Result};
 use base64::engine::general_purpose::STANDARD as b64;
 use base64::Engine;
 use chrono::{TimeDelta, TimeZone, Utc};
@@ -263,9 +263,14 @@ fn opinionated(
         if k.contains("Time") {
             continue;
         }
-        let Some(unit) = rem.remove(&format!("{}Str", k)) else {
-            continue;
+        let unit = match rem.remove(&format!("{}Str", k)) {
+            Some(unit) => unit,
+            None => match rem.remove(&format!("{}Unit", k)) {
+                Some(unit) => unit,
+                None => continue,
+            },
         };
+
         let value = rem.remove(&k).expect("unmodified input list");
         let value = value
             .as_f64()
@@ -319,6 +324,35 @@ fn opinionated(
         }
     }
 
+    for (old, new) in [
+        ("batteryPower", "battery_power_w"),
+        // not sure what any of these are, but they have units
+        // export power management?
+        ("pEpm", "epm_power_w"),
+        ("pEpmSet", "epm_set_power_w"),
+        ("bypassLoadPower", "bypass_load_power_w"),
+        ("psum", "sum_power_w"),
+        ("psumCal", "sum_cal_power_w"),
+        ("powTotal", "total_power_w"),
+        ("familyLoadPower", "family_load_power_w"),
+        ("generatorPower", "generator_power_w"),
+        ("totalLoadPower", "total_load_power_w"),
+        ("pac", "ac_power_w"),
+    ] {
+        if let Some((val, unit)) = with_units.remove(old) {
+            let val = to_watt(val, &unit).with_context(|| anyhow!("processing {old:?}"))?;
+            m.insert(new.to_string(), val);
+        }
+    }
+
+    if let Some((val, unit)) = with_units.remove("inverterTemperature") {
+        ensure!(
+            unit.chars().any(|c| matches!(c, 'C' | '℃')),
+            "inverter temperature unit not C: {unit:?}"
+        );
+        m.insert("inverter_temperature_c".to_string(), val);
+    }
+
     if let Some(v) = rem.remove("batteryCapacitySoc") {
         m.insert(
             "battery_soc".to_string(),
@@ -326,10 +360,7 @@ fn opinionated(
         );
     }
 
-    if let Some((val, unit)) = with_units.remove("batteryPower") {
-        let val = to_watt(val, &unit).with_context(|| anyhow!("processing batteryPower"))?;
-        m.insert("battery_w".to_string(), val);
-    }
+    println!("{:#?}", with_units);
 
     // HACK: restoring 'rem', so the legacy support can continue to work
     for (k, (value, unit)) in with_units {
@@ -385,7 +416,7 @@ mod tests {
         let bad = super::map_detail(&bad)?;
         assert_eq!(good.get("energy_home_load_today_kwh"), Some(&6.1));
         println!("{:#?}", bad);
-        // assert_eq!(bad, HashMap::new());
+        assert_eq!(bad, HashMap::new());
         assert_eq!(bad.get("family_load_power_kw"), Some(&"0.809".to_string()));
         assert_eq!(bad.get("family_load_power_pec"), Some(&"1".to_string()));
         Ok(())
